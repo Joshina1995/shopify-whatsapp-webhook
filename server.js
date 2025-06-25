@@ -5,8 +5,8 @@ const axios = require('axios');
 
 const app = express();
 
-// IMPORTANT: Raw body middleware for webhook verification
-app.use('/webhooks', express.raw({ type: 'application/json' }));
+// IMPORTANT: Raw body middleware for webhook verification ONLY
+app.use('/webhooks/orders/create', express.raw({ type: 'application/json' }));
 // JSON middleware for other routes
 app.use(express.json({ limit: '50mb' }));
 
@@ -36,19 +36,27 @@ function verifyShopifyWebhook(data, hmacHeader) {
   }
   
   try {
+    // Ensure data is treated as Buffer for consistent hashing
+    const dataBuffer = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
+    
     const calculatedHmac = crypto
       .createHmac('sha256', SHOPIFY_WEBHOOK_SECRET)
-      .update(data, 'utf8')
+      .update(dataBuffer)
       .digest('base64');
+    
+    // Clean the received HMAC header (remove any whitespace)
+    const cleanHmacHeader = hmacHeader.trim();
     
     const isValid = crypto.timingSafeEqual(
       Buffer.from(calculatedHmac, 'base64'),
-      Buffer.from(hmacHeader, 'base64')
+      Buffer.from(cleanHmacHeader, 'base64')
     );
     
     console.log('Webhook verification:', isValid ? '✅ Valid' : '❌ Invalid');
     console.log('Expected HMAC:', calculatedHmac);
-    console.log('Received HMAC:', hmacHeader);
+    console.log('Received HMAC:', cleanHmacHeader);
+    console.log('Data length:', dataBuffer.length);
+    console.log('Data preview:', dataBuffer.toString('utf8').substring(0, 100) + '...');
     return isValid;
   } catch (error) {
     console.error('Webhook verification error:', error);
@@ -157,17 +165,19 @@ app.post('/webhooks/orders/create', async (req, res) => {
     
     const hmacHeader = req.get('X-Shopify-Hmac-Sha256');
     console.log('HMAC Header:', hmacHeader);
+    console.log('Content-Type:', req.get('Content-Type'));
+    console.log('User-Agent:', req.get('User-Agent'));
     
-    // Get raw body as string for verification
+    // Get raw body - it should be a Buffer from express.raw()
     const rawBody = req.body;
-    const bodyString = Buffer.isBuffer(rawBody) ? rawBody.toString('utf8') : rawBody;
-    
     console.log('Raw body type:', typeof rawBody);
     console.log('Body is Buffer:', Buffer.isBuffer(rawBody));
+    console.log('Raw body length:', rawBody ? rawBody.length : 'N/A');
     
-    // Parse the order data
+    // Parse the order data from the raw buffer
     let order;
     try {
+      const bodyString = Buffer.isBuffer(rawBody) ? rawBody.toString('utf8') : String(rawBody);
       order = JSON.parse(bodyString);
     } catch (parseError) {
       console.error('❌ Error parsing JSON:', parseError);
@@ -181,8 +191,8 @@ app.post('/webhooks/orders/create', async (req, res) => {
       items_count: order.line_items?.length || 0
     });
     
-    // Verify webhook authenticity
-    if (SHOPIFY_WEBHOOK_SECRET && !verifyShopifyWebhook(bodyString, hmacHeader)) {
+    // Verify webhook authenticity using the raw buffer
+    if (SHOPIFY_WEBHOOK_SECRET && !verifyShopifyWebhook(rawBody, hmacHeader)) {
       console.log('❌ Webhook verification failed');
       return res.status(401).json({ error: 'Unauthorized' });
     }
