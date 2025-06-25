@@ -5,8 +5,8 @@ const axios = require('axios');
 
 const app = express();
 
-// IMPORTANT: Raw body middleware for webhook verification ONLY
-app.use('/webhooks/orders/create', express.raw({ type: 'application/json' }));
+// IMPORTANT: Raw body middleware for webhook verification
+app.use('/webhooks', express.raw({ type: 'application/json' }));
 // JSON middleware for other routes
 app.use(express.json({ limit: '50mb' }));
 
@@ -15,16 +15,23 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const COMPANY_WHATSAPP = process.env.COMPANY_WHATSAPP || '918606532458';
 const SHOPIFY_WEBHOOK_SECRET = process.env.SHOPIFY_WEBHOOK_SECRET;
+const DISABLE_WEBHOOK_VERIFICATION = process.env.DISABLE_WEBHOOK_VERIFICATION === 'true';
 
 console.log('Server starting with config:', {
   hasWhatsAppToken: !!WHATSAPP_TOKEN,
   hasPhoneNumberId: !!PHONE_NUMBER_ID,
   companyWhatsApp: COMPANY_WHATSAPP,
-  hasWebhookSecret: !!SHOPIFY_WEBHOOK_SECRET
+  hasWebhookSecret: !!SHOPIFY_WEBHOOK_SECRET,
+  webhookVerificationDisabled: DISABLE_WEBHOOK_VERIFICATION
 });
 
 // Verify Shopify webhook
 function verifyShopifyWebhook(data, hmacHeader) {
+  if (DISABLE_WEBHOOK_VERIFICATION) {
+    console.log('⚠️  Webhook verification DISABLED for testing');
+    return true;
+  }
+  
   if (!SHOPIFY_WEBHOOK_SECRET) {
     console.log('⚠️  No webhook secret configured, skipping verification');
     return true; // Skip verification for testing
@@ -36,27 +43,21 @@ function verifyShopifyWebhook(data, hmacHeader) {
   }
   
   try {
-    // Ensure data is treated as Buffer for consistent hashing
-    const dataBuffer = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
-    
     const calculatedHmac = crypto
       .createHmac('sha256', SHOPIFY_WEBHOOK_SECRET)
-      .update(dataBuffer)
+      .update(data, 'utf8')
       .digest('base64');
-    
-    // Clean the received HMAC header (remove any whitespace)
-    const cleanHmacHeader = hmacHeader.trim();
     
     const isValid = crypto.timingSafeEqual(
       Buffer.from(calculatedHmac, 'base64'),
-      Buffer.from(cleanHmacHeader, 'base64')
+      Buffer.from(hmacHeader, 'base64')
     );
     
     console.log('Webhook verification:', isValid ? '✅ Valid' : '❌ Invalid');
-    console.log('Expected HMAC:', calculatedHmac);
-    console.log('Received HMAC:', cleanHmacHeader);
-    console.log('Data length:', dataBuffer.length);
-    console.log('Data preview:', dataBuffer.toString('utf8').substring(0, 100) + '...');
+    if (!isValid) {
+      console.log('Expected HMAC:', calculatedHmac);
+      console.log('Received HMAC:', hmacHeader);
+    }
     return isValid;
   } catch (error) {
     console.error('Webhook verification error:', error);
@@ -111,6 +112,7 @@ app.get('/', (req, res) => {
     configuration: {
       whatsapp_configured: !!(WHATSAPP_TOKEN && PHONE_NUMBER_ID),
       webhook_secret_configured: !!SHOPIFY_WEBHOOK_SECRET,
+      webhook_verification_disabled: DISABLE_WEBHOOK_VERIFICATION,
       company_whatsapp: COMPANY_WHATSAPP
     },
     endpoints: {
@@ -164,20 +166,19 @@ app.post('/webhooks/orders/create', async (req, res) => {
     console.log('Time:', new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }));
     
     const hmacHeader = req.get('X-Shopify-Hmac-Sha256');
-    console.log('HMAC Header:', hmacHeader);
-    console.log('Content-Type:', req.get('Content-Type'));
-    console.log('User-Agent:', req.get('User-Agent'));
+    console.log('HMAC Header:', hmacHeader ? 'Present' : 'Missing');
     
-    // Get raw body - it should be a Buffer from express.raw()
+    // Get raw body as string for verification
     const rawBody = req.body;
+    const bodyString = Buffer.isBuffer(rawBody) ? rawBody.toString('utf8') : rawBody;
+    
     console.log('Raw body type:', typeof rawBody);
     console.log('Body is Buffer:', Buffer.isBuffer(rawBody));
-    console.log('Raw body length:', rawBody ? rawBody.length : 'N/A');
+    console.log('Body length:', bodyString.length);
     
-    // Parse the order data from the raw buffer
+    // Parse the order data
     let order;
     try {
-      const bodyString = Buffer.isBuffer(rawBody) ? rawBody.toString('utf8') : String(rawBody);
       order = JSON.parse(bodyString);
     } catch (parseError) {
       console.error('❌ Error parsing JSON:', parseError);
@@ -191,8 +192,8 @@ app.post('/webhooks/orders/create', async (req, res) => {
       items_count: order.line_items?.length || 0
     });
     
-    // Verify webhook authenticity using the raw buffer
-    if (SHOPIFY_WEBHOOK_SECRET && !verifyShopifyWebhook(rawBody, hmacHeader)) {
+    // Verify webhook authenticity
+    if (!verifyShopifyWebhook(bodyString, hmacHeader)) {
       console.log('❌ Webhook verification failed');
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -314,6 +315,7 @@ app.listen(PORT, () => {
   console.log(`   • Phone Number: ${PHONE_NUMBER_ID ? '✅ Configured' : '❌ Not configured'}`);
   console.log(`   • Target WhatsApp: ${COMPANY_WHATSAPP}`);
   console.log(`   • Webhook Secret: ${SHOPIFY_WEBHOOK_SECRET ? '✅ Configured' : '❌ Not configured'}`);
+  console.log(`   • Verification Disabled: ${DISABLE_WEBHOOK_VERIFICATION ? '✅ Yes' : '❌ No'}`);
   console.log('\n💡 Next steps:');
   console.log('   1. Configure WhatsApp API credentials');
   console.log('   2. Set up Shopify webhook');
