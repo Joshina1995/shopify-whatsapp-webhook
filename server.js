@@ -10,7 +10,7 @@ app.use(express.raw({ type: 'application/json' }));
 // Configuration from environment variables
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
-const COMPANY_WHATSAPP = process.env.COMPANY_WHATSAPP || '9715*******9';
+const COMPANY_WHATSAPP = process.env.COMPANY_WHATSAPP || '918606532458';
 const SHOPIFY_WEBHOOK_SECRET = process.env.SHOPIFY_WEBHOOK_SECRET;
 
 console.log('Server starting with config:', {
